@@ -182,8 +182,14 @@ sub script_run ($self, $cmd, @args) {
         if ($level > 1 && $cmd =~ m{(?:>|>>|\btee)\s+(?:-a\s+)?/dev/\Q$testapi::serialdev\E\b}) {
             bmwqemu::diag('Temporarily disabling PRETTY_SERIAL_MARKER to prevent corruption with serial terminal redirection');
             bmwqemu::diag("Manual redirection to /dev/$testapi::serialdev is deprecated and might conflict with advanced serial markers. Use script_output() or use script_run() without the quiet parameter instead.");
-            $level = 1;
-            $skip_pretty = 1;
+            $level = $skip_pretty = 1;
+        }
+        # Disable pretty serial markers for multiline commands where we will otherwise get an unexpected end marker per command
+        # note: We could try to split $cmd and wait for the end marker of the last command. However, splitting $cmd in the same way the shell
+        #       does is complicated, e.g. we would have to handle multiline string literals.
+        if ($level > 1 && $cmd =~ m{\n.+$}) {
+            bmwqemu::diag('Temporarily disabling PRETTY_SERIAL_MARKER for command containing newline characters');
+            $level = $skip_pretty = 1;
         }
         my ($str, $wait_pattern);
         if ($level == 3) {
