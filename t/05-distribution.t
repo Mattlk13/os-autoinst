@@ -381,7 +381,7 @@ subtest 'serial_marker_hook_version_migration' => sub {
     like $typed, qr/echo '_OAPV=\d+;_oap\(\)/, 'The version tag is persisted together with the hook definition';
 };
 
-subtest 'serial_terminal_redirection_guard' => sub {
+subtest 'serial markers are skipped for manual redirections and multiline commands' => sub {
     my $d = distribution->new;
     my $mock_testapi = Test::MockModule->new('testapi');
     my $mock_bmwqemu = Test::MockModule->new('bmwqemu');
@@ -402,6 +402,8 @@ subtest 'serial_terminal_redirection_guard' => sub {
 
     my @cases = (
         {cmd => 'foo', guard => 0, msg => 'normal command without serial redirection does not trigger the guard'},
+        {cmd => "foo\n", guard => 0, msg => 'trailing newline characters does not trigger the guard'},
+        {cmd => "foo\nbar\n", guard => 2, msg => 'newline characters trigger the guard'},
         {cmd => 'foo | tee /dev/ttyS0', guard => 1, msg => 'piping to the serial terminal triggers the guard'},
         {cmd => 'bar > /dev/ttyS0', guard => 1, msg => 'redirection to the serial terminal triggers the guard'},
         {cmd => 'baz >> /dev/ttyS0', guard => 1, msg => 'appending to the serial terminal triggers the guard'},
@@ -416,13 +418,18 @@ subtest 'serial_terminal_redirection_guard' => sub {
         $d->{serial_term_prompt} = '# ';
 
         $d->script_run($case->{cmd});
-        if ($case->{guard}) {
+        if ($case->{guard} == 1) {
             like $typed, qr/_OANM=1; /, $case->{msg};
             like $diag_msg, qr/Manual redirection to \/dev\/ttyS0 is deprecated/, 'deprecation warning shown';
+        }
+        elsif ($case->{guard} == 2) {
+            like $typed, qr/_OANM=1; /, $case->{msg};
+            like $diag_msg, qr/Temporarily disabling.*newline characters/, 'info message shown';
         }
         else {
             unlike $typed, qr/_OANM=1; /, $case->{msg};
             unlike $diag_msg, qr/Manual redirection to \/dev\/ttyS0 is deprecated/, 'no deprecation warning for normal command';
+            unlike $diag_msg, qr/Temporarily disabling.*newline characters/, 'no newline info shown';
         }
         is $vars{PRETTY_SERIAL_MARKER}, 1, "PRETTY_SERIAL_MARKER is active again after '$case->{cmd}'";
     }
