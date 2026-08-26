@@ -47,7 +47,6 @@ sub send_json ($to_fd, $cmd) {
 
     my $json = $cjx->encode(\%cmdcopy);
     bmwqemu::diag(sprintf 'send_json(%d) JSON=%s', fileno($to_fd), $json =~ s/"([^"]{30})[^"]+"/"$1"/gr) if is_debug();
-    $json .= "\n";
 
     confess 'myjsonrpc: called on undefined file descriptor' unless defined $to_fd;
     my $written_bytes = 0;
