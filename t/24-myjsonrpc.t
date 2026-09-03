@@ -10,6 +10,18 @@ use FindBin '$Bin';
 use lib "$Bin/../external/os-autoinst-common/lib";
 use OpenQA::Test::TimeLimit '5';
 use Socket;
+
+# mock sysread to be able to limit the number of bytes read from the socket
+my $mock_sysread_limit;
+
+BEGIN {
+    *CORE::GLOBAL::sysread = sub : prototype(*$;$$) {
+        my ($socket, undef, $length, $offset) = @_;
+        $length = $mock_sysread_limit if defined $mock_sysread_limit && $length > $mock_sysread_limit;
+        return CORE::sysread($socket, $_[1], $length, $offset // 0);
+    };
+}
+
 use myjsonrpc;
 
 use Test::Warnings qw(warnings :report_warnings);
@@ -102,6 +114,43 @@ subtest 'handling interleaved commands' => sub {
     myjsonrpc::set_interleaved_command_handler(undef);
     close $sub_child;
     close $sub_isotovideo;
+};
+
+subtest 'reproduce deadlock/newline issue' => sub {
+    my ($child, $isotovideo);
+    socketpair $child, $isotovideo, AF_UNIX, SOCK_STREAM, PF_UNSPEC;
+    $child->autoflush(1);
+    $isotovideo->autoflush(1);
+
+    # send a test message; it is not supposed to contain a trailing newline
+    my $cjx = Cpanel::JSON::XS->new->canonical->utf8->convert_blessed();
+    my $json_str = $cjx->encode({test => 'deadlock', json_cmd_token => '12345678'});
+    my $json_len = length $json_str;
+    myjsonrpc::send_json($child, {test => 'deadlock', json_cmd_token => '12345678'});
+
+    # mock IO::Select::can_read to keep track of whether it would run into a deadlock
+    my $can_read_count = 0;
+    my $test_io_select_mock = Test::MockModule->new('IO::Select');
+    $test_io_select_mock->redefine(can_read => sub ($self, $timeout = undef) {
+            my $original_can_read = $test_io_select_mock->original('can_read');
+            die 'deadlock detected: can_read called multiple times because of trailing newline' if ++$can_read_count > 1;    # uncoverable statement
+            return $original_can_read->($self, $timeout);
+    });
+
+    # read with sysread limited to read exactly the JSON length, leaving any trailing newline in the socket
+    # note: In practice, this can happen if the JSON length matches exactly the size of the pipe.
+    $mock_sysread_limit = $json_len;
+    my $read = myjsonrpc::read_json($isotovideo, undef);
+    is_deeply $read, {test => 'deadlock', json_cmd_token => '12345678'}, 'parsed JSON object';
+    my $bytes_left_to_read = $test_io_select_mock->original('can_read')->(IO::Select->new($isotovideo), 0);
+    ok !$bytes_left_to_read, 'socket is not readable; no leftover trailing newline in socket';
+
+    # call read_json again as the consumer would do if there is a leftover newline to read
+    myjsonrpc::read_json($isotovideo, undef) if $bytes_left_to_read;    # uncoverable statement
+
+    undef $mock_sysread_limit;
+    close $child;
+    close $isotovideo;
 };
 
 my $io_select_mock = Test::MockModule->new('IO::Select');
